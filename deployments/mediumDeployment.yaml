@@ -1,0 +1,64 @@
+apiVersion: apps/v1
+kind: Deployment
+
+metadata:
+  name: nginx
+  namespace: practica
+  labels:
+    app: nginx
+
+spec:
+  replicas: 3
+
+  revisionHistoryLimit: 3
+  minReadySeconds: 5
+
+  selector:
+    matchLabels:
+      app: nginx
+
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+
+  template:
+    metadata:
+      labels:
+        app: nginx
+
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:1.28
+
+          ports:
+            - name: http
+              containerPort: 80
+
+          resources:
+            requests:
+              cpu: 100m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 128Mi
+
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 5
+
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+
+
+#- readinessProbe comprueba si el contenedor está preparado para recibir tráfico. Si falla, el Pod queda sin estar listo y un Service deja de enviarlo como destino disponible.
+# - livenessProbe comprueba si el contenedor sigue funcionando. Después de suficientes fallos consecutivos, Kubernetes lo reinicia.
