@@ -1,0 +1,25 @@
+apiVersion: v1
+kind: Service
+
+metadata:
+  name: frontend-publico
+  namespace: practica
+  labels:
+    app: tienda
+    component: frontend
+
+spec:
+  type: LoadBalancer
+
+  selector:
+    app: tienda
+    component: frontend
+
+  ports:
+    - name: web
+      protocol: TCP
+      port: 80
+      targetPort: http
+
+  externalTrafficPolicy: Local
+  internalTrafficPolicy: Cluster
