@@ -1,0 +1,185 @@
+# Laboratorio para nodos Linux. Requiere Pod Security Admission y RBAC.
+# Los valores sensibles son ficticios. Para credenciales reales, usar entrega externa.
+# Se usa el perfil de la version del cluster (latest).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: seguridad-practica
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/warn-version: latest
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/audit-version: latest
+
+---
+# Identidad del servidor web. La aplicacion atiende HTTP sin consultar la API.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: web
+  namespace: seguridad-practica
+automountServiceAccountToken: false
+
+---
+# Identidad independiente para practicar autorizacion con kubectl auth can-i.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: observador
+  namespace: seguridad-practica
+automountServiceAccountToken: false
+
+---
+# Autoriza exclusivamente get del ConfigMap indicado, dentro de este namespace.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: leer-configuracion
+  namespace: seguridad-practica
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["web-config"]
+    verbs: ["get"]
+
+---
+# Vincula los permisos con la identidad observador.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: observador-lee-configuracion
+  namespace: seguridad-practica
+subjects:
+  - kind: ServiceAccount
+    name: observador
+    namespace: seguridad-practica
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: leer-configuracion
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: web-config
+  namespace: seguridad-practica
+data:
+  entorno: practica
+
+---
+# Dato de demostracion para inspeccionar un montaje con permisos restringidos.
+# nginx no consume este token ni lo publica mediante HTTP.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: web-secret
+  namespace: seguridad-practica
+type: Opaque
+stringData:
+  token: token-ficticio-de-laboratorio
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+  namespace: seguridad-practica
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: web-segura
+  template:
+    metadata:
+      labels:
+        app: web-segura
+    spec:
+      os:
+        name: linux
+      nodeSelector:
+        kubernetes.io/os: linux
+      serviceAccountName: web
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101
+        runAsGroup: 101
+        fsGroup: 101
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: nginx
+          image: nginxinc/nginx-unprivileged:1.28-alpine
+          # Arranque directo con la configuracion incluida en la imagen.
+          command: ["nginx"]
+          args: ["-g", "daemon off;"]
+          ports:
+            - name: http
+              containerPort: 8080
+          securityContext:
+            privileged: false
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 64Mi
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            periodSeconds: 5
+          volumeMounts:
+            - name: temporales
+              mountPath: /tmp
+            - name: configuracion
+              mountPath: /run/app
+              readOnly: true
+      volumes:
+        # nginx necesita escribir su PID y archivos temporales.
+        - name: temporales
+          emptyDir:
+            sizeLimit: 64Mi
+        - name: configuracion
+          projected:
+            # Lectura para propietario y grupo; fsGroup permite acceso al UID 101.
+            defaultMode: 0440
+            sources:
+              - configMap:
+                  name: web-config
+                  items:
+                    - key: entorno
+                      path: entorno.txt
+              - secret:
+                  name: web-secret
+                  items:
+                    - key: token
+                      path: token.txt
+              - downwardAPI:
+                  items:
+                    - path: pod.txt
+                      fieldRef:
+                        fieldPath: metadata.name
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: web
+  namespace: seguridad-practica
+spec:
+  type: ClusterIP
+  selector:
+    app: web-segura
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
